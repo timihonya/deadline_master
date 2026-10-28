@@ -26,6 +26,9 @@
     <Compile Include="handlers\add_new_task.py">
       <SubType>Code</SubType>
     </Compile>
+    <Compile Include="handlers\reminders.py">
+      <SubType>Code</SubType>
+    </Compile>
     <Compile Include="handlers\start.py">
       <SubType>Code</SubType>
     </Compile>

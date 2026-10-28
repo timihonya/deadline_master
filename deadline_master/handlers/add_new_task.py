@@ -12,8 +12,8 @@ from states import Form
 router = Router()
 
 @router.message_callback(CallbackPayload.filter(data="confirm_add_task"))  #ответ на добавление задания
-async def ask_type(event: CallbackPayload):  # потом изменю названия
-    await event.message.answer("выберите тип задания:", keyboard=get_types_keyboard())
+async def ask_type(event: CallbackPayload):
+    await event.message.answer("Выбери тип задания:", keyboard=get_types_keyboard())
 
 @router.message_callback(
     (CallbackPayload.filter(data="first_type")) | 
@@ -23,22 +23,21 @@ async def ask_type(event: CallbackPayload):  # потом изменю назв�
 async def ask_name(event: CallbackPayload, context: MemoryContext):
     await context.update_data(task_type=event.data)
     await context.set_state(Form.name)
-    await event.message.answer('введите название задания, например "математика, №145"')
+    await event.message.answer('Введи название задания, например "математика, №145":')
 
 @router.message_created(F.message.body.text, Form.name)
 async def ask_date(event: MessageCreated, context: MemoryContext):
     await context.update_data(task_name=event.message.body.text)
     await context.set_state(Form.date)
-    await event.message.answer("введите дату задания в виде ДД.ММ.ГГГГ")  # желательно потом сделать что-то типа календаря для защиты от недалёких
+    await event.message.answer("Введи дату задания в виде ДД.ММ.ГГГГ:")
     
 @router.message_created(F.message.body.text, Form.date)
 async def save_task(event: MessageCreated, context: MemoryContext):
-    #  тут должна идти проверка на правильность, сделаем её чуть позже
     date = event.message.body.text
     try:
         datetime.strptime(date, "%d.%m.%y")
     except ValueError:
-        await event.message.answer("Неверный формат. Введи как 25.12.2025")
+        await event.message.answer("Неверный формат. Введи как 08.11.2026")
         return
     
     await context.update_data(task_date=date)

@@ -18,4 +18,4 @@ async def bot_started(event: BotStarted):
 @router.message_created(Command('start'))  # первый экран
 async def main_screen(event: MessageCreated, context: MemoryContext):
     await context.clear()
-    await event.message.answer("выбери действие:", keyboard=get_main_keyboard())
+    await event.message.answer("Выбери действие:", keyboard=get_main_keyboard())
