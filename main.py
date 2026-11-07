@@ -446,7 +446,7 @@ def get_equipped_avatar_path(user_id):
 
 # ================= картинка и всё остальное =================
 
-def generate_profile_card(username, level, coins, exp, streak, total_completed, avatar_path= None):
+def generate_profile_card(username, level, coins, exp, streak, total_completed, avatar_path=None):
     img = Image.new("RGB", (600, 450), "#FFFFFF")
     draw = ImageDraw.Draw(img)
 
