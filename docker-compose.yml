@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   bot:
     build: .
@@ -8,7 +6,8 @@ services:
     env_file:
       - .env
     volumes:
-      - bot_data:/app/generated
+      - ./generated:/app/generated
 
 volumes:
   bot_data:
+  

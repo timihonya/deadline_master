@@ -1,2 +1,4 @@
 httpx==0.27.2
 certifi==2024.8.30
+python-dotenv
+Pillow==10.4.0
