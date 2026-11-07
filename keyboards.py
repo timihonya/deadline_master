@@ -72,6 +72,13 @@ def get_types_keyboard():
                         "payload": "third_type",
                     }
                 ],
+                [
+                    {
+                        "type": "callback",
+                        "text": "↩️Вернуться в главное меню",
+                        "payload": "return_to_main_menu"
+                    }
+                ]
             ]
         },
     }
@@ -120,6 +127,15 @@ def get_calendar_keyboard(month: int, year: int) -> list:
                     "payload": f"cal_day_{date_str}"
                 })
         rows.append(week_row)
+
+    main_menu = [
+        {
+            "type": "callback",
+            "text": "↩️Вернуться в главное меню",
+            "payload": "return_to_main_menu"
+        }
+    ]
+    rows.append(main_menu)
     
     return [
         {

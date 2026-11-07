@@ -127,28 +127,6 @@ async def send_photo(user_id, text, image_io, attachments=None):
     response.raise_for_status()
     return response.json()
 
-async def edit_message(message_id, text, attachments=None):
-    payload = {
-        "text": text,
-        "format": "markdown"
-    }
-    if attachments:
-        payload["attachments"] = attachments
-
-    response = await async_client.put(
-        f"{BASE_URL}/messages",
-        headers={
-            "Authorization": TOKEN,
-            "Content-Type": "application/json",
-        },
-        params={ 
-            "message_id": str(message_id),
-        },
-        json=payload,
-    )
-    response.raise_for_status()
-    return response.json()
-
 async def answer_callback(callback_id, text, image_io=None, attachments=None):
     payload = {
         "message": {
