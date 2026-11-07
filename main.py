@@ -1,9 +1,10 @@
 import asyncio
 import logging
 import sqlite3
+import copy
 import os
 import io 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 from datetime import datetime
 
 from keyboards import get_main_keyboard, get_types_keyboard, get_calendar_keyboard, get_shop_keyboard
@@ -76,15 +77,22 @@ def init_users_db():
                 chat_id TEXT,
                 exp INTEGER DEFAULT 0,
                 coins INTEGER DEFAULT 0,
-                tasks_done INTEGER DEFAULT 0
+                tasks_done INTEGER DEFAULT 0,
+                username TEXT DEFAULT 'Пользователь'
             ) 
         """)
+        columns = [row[1] for row in conn.execute("PRAGMA table_info(users)")]
+
+        if "username" not in columns:
+            conn.execute("ALTER TABLE users ADD COLUMN username TEXT DEFAULT 'Пользователь'")
+
         conn.execute("""
             CREATE TABLE IF NOT EXISTS user_streak(
                 user_id TEXT PRIMARY KEY,
                 curr_streak INTEGER DEFAULT 0,
                 max_streak INTEGER DEFAULT 0,
-                last_active_date TEXT
+                last_active_date TEXT,
+                task_type_done TEXT DEFAULT '0,0,0'
             )
         """)
 
@@ -96,7 +104,7 @@ def add_new_user(user_id, chat_id):
         )
         conn.execute("UPDATE users SET chat_id = ? WHERE user_id = ?", (chat_id, user_id))
 
-def update_user_info(user_id, exp=None, coins=None, task_done=None):
+def update_user_info(user_id, exp=None, coins=None, task_done=None, type_done_today=None):
     with sqlite3.connect(DB_USERS) as conn:
         if exp is not None:
             conn.execute("UPDATE users SET exp = exp + ? WHERE user_id = ?", (exp, user_id)) 
@@ -117,9 +125,41 @@ def get_user_stats(user_id):
         row = cursor.fetchone()
     return {"exp": row[0], "coins": row[1], "tasks_done": row[2]} if row else {"exp": 0, "coins": 0, "tasks_done": 0}
 
+def get_level_from_exp(exp):
+    level = 1
+    exp_need = 100
+    temp_exp = exp
+
+    while temp_exp >= exp_need:
+        temp_exp -= exp_need
+        level += 1
+        exp_need += 100
+
+    return level
+# сейча
+def get_user_level(user_id):
+    profile = get_user_exp_coins(user_id)
+    return get_level_from_exp(profile["exp"])
+def get_user_name(user_id):
+    with sqlite3.connect(DB_USERS) as conn:
+        cursor = conn.execute(
+            "SELECT username FROM users WHERE user_id = ?",
+            (str(user_id),)
+        )
+        row = cursor.fetchone()
+
+    return row[0] if row and row[0] else "Пользователь"
+
+
+def update_user_name(user_id, username):
+    with sqlite3.connect(DB_USERS) as conn:
+        conn.execute(
+            "UPDATE users SET username = ? WHERE user_id = ?",
+            (username, str(user_id))
+        )
 def update_streak(user_id, today):
     with sqlite3.connect(DB_USERS) as conn:
-        cursor = conn.execute("SELECT curr_streak, max_streak, last_active_date FROM user_streak WHERE user_id = ?", (str(user_id),))
+        cursor = conn.execute("SELECT curr_streak, max_streak, last_active_date, task_type_done FROM user_streak WHERE user_id = ?", (str(user_id),))
         row = cursor.fetchone()
         
         if not row:
@@ -129,7 +169,7 @@ def update_streak(user_id, today):
             )
             return 1
             
-        curr_streak, max_streak, last_active = row
+        curr_streak, max_streak, last_active, type_done = row
         if last_active == today:
             return curr_streak
             
@@ -144,8 +184,8 @@ def update_streak(user_id, today):
             
         max_streak = max(max_streak, curr_streak)
         conn.execute(
-            "UPDATE user_streak SET curr_streak = ?, max_streak = ?, last_active_date = ? WHERE user_id = ?", 
-            (curr_streak, max_streak, today, str(user_id))
+            "UPDATE user_streak SET curr_streak = ?, max_streak = ?, last_active_date = ? ,task_type_done = ? WHERE user_id = ?", 
+            (curr_streak, max_streak, today, '0,0,0', str(user_id))
         )
         return curr_streak
 
@@ -154,6 +194,19 @@ def get_user_streak(user_id):
         cursor = conn.execute("SELECT curr_streak FROM user_streak WHERE user_id = ?", (str(user_id),))
         row = cursor.fetchone()
     return row[0] if row else 0
+
+def get_user_task_type_done(user_id):
+    with sqlite3.connect(DB_USERS) as conn:
+        cursor = conn.execute("SELECT task_type_done FROM user_streak WHERE user_id = ?", (str(user_id),))
+        row = cursor.fetchone()
+    return row[0] if row else None
+
+def update_user_task_type_done(user_id, task_type_done):
+    with sqlite3.connect(DB_USERS) as conn:
+            conn.execute(
+                "UPDATE user_streak SET task_type_done = ? WHERE user_id = ?",
+                (task_type_done, str(user_id))
+            )
 
 
 # ================= магазин =================
@@ -167,9 +220,18 @@ def create_shop_tasks():
                 category TEXT NOT NULL, 
                 price INTEGER NOT NULL,
                 rarity TEXT,
-                image_path TEXT
+                image_path TEXT,
+                required_level INTEGER DEFAULT 1
             )
         """)
+        columns = [
+            row[1] for row in conn.execute("PRAGMA table_info(shop_items)") # запустишь?
+        ]
+
+        if "required_level" not in columns:
+            conn.execute(
+                "ALTER TABLE shop_items ADD COLUMN required_level INTEGER DEFAULT 1"
+            )
         conn.execute("""
             CREATE TABLE IF NOT EXISTS user_inventory(
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -185,40 +247,74 @@ def create_shop_tasks():
             )
         """)
 
-def add_avatar(name, price, rarity, image_path):
+def add_avatar(name, price, rarity, image_path, required_level=1):
     with sqlite3.connect(DB_USERS) as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT id FROM shop_items WHERE name = ? AND category = 'avatar'", (name,))
-        if cursor.fetchone():
-            return
-        cursor.execute("""
-            INSERT INTO shop_items (name, category, price, rarity, image_path)
-            VALUES (?, 'avatar', ?, ?, ?)
-        """, (name, price, rarity, image_path))
 
-def init_shop():
+        cursor.execute("""
+            SELECT id FROM shop_items
+            WHERE name = ? AND category = 'avatar'
+        """, (name,))
+
+        existing = cursor.fetchone()
+
+        if existing:
+            cursor.execute("""
+                UPDATE shop_items
+                SET price = ?, rarity = ?, image_path = ?, required_level = ?
+                WHERE id = ?
+            """, (price, rarity, image_path, required_level, existing[0])) 
+
+        else:
+            cursor.execute("""
+                INSERT INTO shop_items
+                (name, category, price, rarity, image_path, required_level)
+                VALUES (?, 'avatar', ?, ?, ?, ?)
+            """, (name, price, rarity, image_path, required_level))
+def init_shop(): 
     avatars = [
-        ("Котик сигма", 50, "Обычная", "profile_images/cool_cat.png"),
-        ("Лиса школьница", 50, "Обычная", "profile_images/pupil_fox.png"),
-        ("Дракоша", 70, "Редкая", "profile_images/dragon.png"),
-        ("Умная сова", 70, "Редкая", "profile_images/clever_owl.png"),
-        ("Король Лягуш", 100, "Эпическая", "profile_images/king_frog.png"),
-        ("КосмоРобот", 100, "Эпическая", "profile_images/space_robot.png"),
-        ("Хранитель времени", 150, "Мифическая", "profile_images/keeper.png"),
-        ("Милый зайка", 150, "Мифическая", "profile_images/lovely_bunny.png"),
-        ("Легенда времени", 250, "Легендарная", "profile_images/idk_who_is_that.png")
+        ("Котик сигма", 50, "Обычная", "profile_images/cool_cat.png", 2),
+        ("Лиса школьница", 50, "Обычная", "profile_images/pupil_fox.png", 1),
+        ("Дракоша", 70, "Редкая", "profile_images/dragon.png", 3),
+        ("Умная сова", 70, "Редкая", "profile_images/clever_owl.png", 4),
+        ("Король Лягуш", 100, "Эпическая", "profile_images/king_frog.png", 5),
+        ("КосмоРобот", 100, "Эпическая", "profile_images/space_robot.png", 6),
+        ("Хранитель времени", 150, "Мифическая", "profile_images/keeper.png", 11),
+        ("Милый зайка", 150, "Мифическая", "profile_images/lovely_bunny.png", 12),
+        ("Легенда времени", 250, "Легендарная", "profile_images/idk_who_is_that.png",20),
+        ("Король роботов", 100, "Эпический", "profile_images/roboking.png", 8),
+        ("Котик программист", 150, "Мифическая", "profile_images/kotikproger.png", 13),
+        ("Спящий котяра", 70, "Редкий", "profile_images/kotikspit.png", 3),
+        ("Цифровой разум",50, "Обычная", "profile_images/python.png", 2),
+        ("Linux", 150, "Мифическая", "profile_images/lunixvotpycke.png", 14),
+        ("Стив", 70, "Редкий", "profile_images/steve.png", 2),
+        ("Котик меломан", 100, "Эпическая", "profile_images/tipoklytoi.png", 10),
+        ("Программист", 50, "Обычная", "profile_images/tipoprogrammist.png", 1),
+        ("Хакер", 250, "Легендарная", "profile_images/tipohaker.png", 19),
+        ("Огненный бык", 150, "Мифический", "profile_images/bik.png", 15),
+        ("Уличный чемпион", 150, "Мифический", "profile_images/jordan.png", 17),
+        ("Галактическая панда", 100, "Эпический", "profile_images/panda.png", 7),
+        ("Полярный геймер", 100, "Эпический", "profile_images/pinguin.png", 9),
+        ("Теневой волк", 70, "Редкий", "profile_images/volk.png", 5),
+        ("Теннисный профи", 70, "Редкий", "profile_images/duck.png", 3),
+        ("Космический кот", 50, "Обычный", "profile_images/kot.png", 1),
+        ("Баскетбольный чемпион", 50, "Обычный", "profile_images/sobaka.png", 2),
+        ("Главный герой", 250, "Легендарный", "profile_images/sweety_fox.png", 18),
     ]
+
     for avatar in avatars:
         add_avatar(*avatar)
 
-def get_shop_items():
+def get_shop_items(level):
     with sqlite3.connect(DB_USERS) as conn:
         cursor = conn.execute("""
             SELECT id, name, price, rarity, image_path
             FROM shop_items
             WHERE category = 'avatar'
+            AND required_level <= ?
             ORDER BY id
-        """)
+        """, (level,))
+
         return cursor.fetchall()
 
 def has_avatar(user_id, item_id):
@@ -230,10 +326,22 @@ def buy_avatar(user_id, item_id):
     with sqlite3.connect(DB_USERS) as conn:
         cursor = conn.cursor()
         
-        cursor.execute("SELECT price FROM shop_items WHERE id = ? AND category = 'avatar'", (item_id,))
+        cursor.execute("""
+            SELECT price, required_level
+            FROM shop_items
+            WHERE id = ? AND category = 'avatar'
+        """, (item_id,))
+
         item = cursor.fetchone()
         if not item:
             return False, "Аватарка не найдена."
+            
+        price, required_level = item
+
+        user_level = get_user_level(user_id)
+
+        if user_level < required_level:
+            return False, f"Эта аватарка откроется на {required_level} уровне"
             
         cursor.execute("SELECT id FROM user_inventory WHERE user_id = ? AND item_id = ?", (str(user_id), item_id))
         if cursor.fetchone():
@@ -244,7 +352,6 @@ def buy_avatar(user_id, item_id):
         if not user:
             return False, "Пользователь не найден."
             
-        price = item[0]
         if user[0] < price:
             return False, "Недостаточно монет."
             
@@ -254,7 +361,8 @@ def buy_avatar(user_id, item_id):
         return True, "Аватарка успешно куплена!"
 
 async def show_shop(user_id, index=0, callback_id=None):
-    items = await asyncio.to_thread(get_shop_items)
+    level = await asyncio.to_thread(get_user_level, user_id)
+    items = await asyncio.to_thread(get_shop_items, level)
 
     if not items:
         await send_message(user_id=user_id, text="Магазин пока пуст")
@@ -322,10 +430,23 @@ def get_equipped_avatar(user_id):
         result = cursor.fetchone()
         return result[0] if result else None
 
+def get_equipped_avatar_path(user_id):
+    with sqlite3.connect(DB_USERS) as conn:
+        row = conn.execute("""
+            SELECT shop_items.image_path
+            FROM equipped_items
+            Join shop_items
+            ON equipped_items.avatar_id = shop_items.id
+            WHERE equipped_items.user_id = ?
+        """, (str(user_id),)).fetchone()
+
+    return row[0] if row else None
+
+
 
 # ================= картинка и всё остальное =================
 
-def generate_profile_card(username, level, coins, exp, streak, total_completed):
+def generate_profile_card(username, level, coins, exp, streak, total_completed, avatar_path= None):
     img = Image.new("RGB", (600, 450), "#FFFFFF")
     draw = ImageDraw.Draw(img)
 
@@ -346,15 +467,49 @@ def generate_profile_card(username, level, coins, exp, streak, total_completed):
     draw.rounded_rectangle([440, 25, 570, 65], radius=8, fill="#E6D8FF")
     draw.text((455, 34), f"Уровень {level}", fill="#7F49F2", font=font_sub)
 
-    draw.rounded_rectangle([30, 90, 150, 210], radius=12, fill="#F0F2F5")
-    draw.rectangle([75, 135, 105, 165], outline="#99A2AD", width=2)
+    try:
+        if avatar_path and os.path.isfile(avatar_path):
+            avatar = Image.open(avatar_path).convert("RGBA")
+
+            avatar = ImageOps.fit(avatar, (120, 120))
+
+            mask = Image.new("L", (120, 120), 0)
+            mask_draw = ImageDraw.Draw(mask)
+            mask_draw.rounded_rectangle(
+                [0, 0, 120, 120],
+                radius = 12,
+                fill = 255
+            )
+
+            img.paste(avatar, (30, 90), mask)
+
+        else:
+            draw.rounded_rectangle(
+                [30, 90, 150, 210],
+                radius = 12, 
+                fill = "#F0F2F5"
+            )
+            draw.rectangle(
+                [75, 135, 105, 165],
+                outline = "#99A2AD",
+                width = 2
+            )
+
+    except Exception:
+        logger.exception("Ошибка загрузки аватарки")
+        draw.rounded_rectangle(
+            [30, 90, 150, 210],
+            radius = 12,
+            fill = "#F0F2F5"
+        )
+
 
     draw.text((170, 95), username, fill="#000000", font=font_title)
-    draw.text((170, 170), f"{coins}", fill="#E6A23C", font=font_title)
+    draw.text((170, 170), f"{coins} 🪙", fill="#E6A23C", font=font_title)
 
     exp_need = 100
     exp_in_level = exp
-    while exp_in_level > exp_need:
+    while exp_in_level >= exp_need:
         exp_in_level -= exp_need
         exp_need += 100
     
@@ -367,7 +522,7 @@ def generate_profile_card(username, level, coins, exp, streak, total_completed):
     if progress > 30:
         draw.rounded_rectangle([30, 285, progress, 310], radius=10, fill="#9A66FF")
 
-    draw.text((30, 345), f"{streak}", fill="#FF7A00", font=font_big)
+    draw.text((30, 345), f"{streak} 🔥", fill="#FF7A00", font=font_big)
     draw.text((30, 395), "Дней подряд", fill="#5C6673", font=font_sub)
 
     draw.text((330, 345), f"{total_completed}", fill="#000000", font=font_big)
@@ -480,11 +635,43 @@ async def handle_update(update):
             return
 
         if text.lower() == "/give_meh_money":
-            await asyncio.to_thread(update_user_info, user_id, coins = 2000)
+            await asyncio.to_thread(update_user_info, user_id, coins=2000)
+            await send_message(user_id=user_id, text="+2000 монет")
+            return
+
+        if text.lower() == "/give_meh_exp":
+            await asyncio.to_thread(update_user_info, user_id, exp=1000)
+            await send_message(user_id=user_id, text="+1000 опыта")
+            return
 
         state_data = user_states.get(user_id)
         state = state_data.get("state") if state_data else None
+        if state == "waiting_profile_name":
+            new_name = text.strip()
 
+            if not new_name:
+                await send_message(
+                    user_id=user_id,
+                    text="Имя не может быть пустым. Попробуй ещё раз:"
+                )
+                return
+
+            if len(new_name) > 20:
+                await send_message(
+                    user_id=user_id,
+                    text="Имя слишком длинное! Максимум 20 символов. Попробуй ещё раз:"
+                )
+                return
+
+            await asyncio.to_thread(update_user_name, user_id, new_name)
+
+            user_states.pop(user_id, None)
+
+            await send_message(
+                user_id=user_id,
+                text=f"✅ Имя успешно изменено на «{new_name}»!\n\nОткрой профиль, чтобы увидеть изменения."
+            )
+            return
         if state == "waiting_name":
             user_states[user_id]["task_name"] = text
             user_states[user_id]["state"] = "waiting_date"
@@ -519,6 +706,14 @@ async def handle_update(update):
         elif payload == "confirm_open_shop":
             await show_shop(user_id)
             return
+        elif payload == "change_profile_name":
+            user_states[user_id] = {"state": "waiting_profile_name"}
+
+            await send_message(
+                user_id=user_id,
+                text="✏️ Введи новое имя для своего профиля (до 20 символов):"
+            )
+            return
 
         elif payload.startswith("shop_buy_"):
             item_id = int(payload.split("_")[-1])
@@ -527,23 +722,24 @@ async def handle_update(update):
                 buy_avatar, user_id, item_id
             )
 
-            await send_message(user_id=user_id, text=message_text)
-
             if success:
                 state_data = user_states.get(user_id, {})
-                await show_shop(user_id, state_data.get("index", 0))
+                callback_id = callback.get("callback_id")
+                await show_shop(user_id, state_data.get("index", 0), callback_id=callback_id)
+            else:
+                await send_message(user_id=user_id, text=message_text)
 
         elif payload.startswith("shop_equip_"):
-            item_id = int(payload.split("_")[-1])  # поставь стикер на Аватарка установлена, пожалуйста, в 532 строке
+            item_id = int(payload.split("_")[-1]) 
             success = await asyncio.to_thread(equip_avatar, user_id, item_id)
 
             if success:
-                await send_message(user_id=user_id, text= "Аватарка установлена")
-                state_data= user_states.get(user_id, {})
-                await show_shop(user_id, state_data.get("index", 0))
+                state_data = user_states.get(user_id, {})
+                callback_id = callback.get("callback_id")
+                await show_shop(user_id, state_data.get("index", 0), callback_id=callback_id)
 
             else:
-                await send_message(user_id=user_id, text= "Сначала купи аватарку")
+                await send_message(user_id=user_id, text="Сначала купи аватарку")
 
         elif payload in ("shop_prev", "shop_next"):
             state_data = user_states.get(user_id, {})
@@ -595,33 +791,37 @@ async def handle_update(update):
 
         elif payload == "confirm_open_profile":
             profile = await asyncio.to_thread(get_user_stats, user_id)
-            
+            avatar_path = await asyncio.to_thread(
+                get_equipped_avatar_path, user_id
+            )
             current_exp = profile["exp"]
             current_coins = profile["coins"]
             streak_days = await asyncio.to_thread(get_user_streak, user_id)
             total_done = profile["tasks_done"]
-            level = 1
-            exp_need = 100
-            temp_exp = current_exp
-            
-            while temp_exp > exp_need:
-                temp_exp -= exp_need
-                level += 1
-                exp_need += 100
+            level = await asyncio.to_thread(get_user_level, user_id)
+
             profile_card_bytes = generate_profile_card(
-                username="Пользователь",
+                username=await asyncio.to_thread(get_user_name, user_id),
                 level=level,
                 coins=current_coins,
                 exp=current_exp,
                 streak=streak_days,
+                avatar_path=avatar_path,
                 total_completed=total_done
             )
-
+            profile_keyboard = copy.deepcopy(get_main_keyboard())
+            profile_keyboard["payload"]["buttons"].append([
+                {
+                    "type": "callback",
+                    "text": "✏️ Изменить имя",
+                    "payload": "change_profile_name"
+                }
+            ])
             await send_photo( 
                 user_id=user_id,
                 text="📊 Твой игровой профиль успешно загружен!",
                 image_io=profile_card_bytes,  
-                attachments=[get_main_keyboard()]
+                attachments=[profile_keyboard]
             )
             return
 
@@ -636,26 +836,57 @@ async def handle_update(update):
                 
                 if task:
                     t_type, t_name = task
+                    
+                    type_done_today = await asyncio.to_thread(get_user_task_type_done, user_id)
+                    if not type_done_today:
+                        type_done_today = '0,0,0'
+                        
+                    type_done_list = [int(x) for x in type_done_today.split(',')]
 
                     if "Обычное задание" in t_type:
                         exp, coins = 10, 5
+                        type_done = type_done_list[0]
+                        type_limit = 3
+                        type_done_list[0] += 1
                     elif "Олимпиада или конкурс" in t_type:
                         exp, coins = 30, 15
+                        type_done = type_done_list[1]
+                        type_limit = 1
+                        type_done_list[1] += 1
                     else:
                         exp, coins = 50, 30
+                        type_done = type_done_list[2]
+                        type_limit = 1
+                        type_done_list[2] += 1
                         
+                    if type_done >= type_limit:
+                        exp, coins = 0, 0
+                        
+                    task_type_done = ','.join(map(str, type_done_list))
+
                     await asyncio.to_thread(update_user_info, user_id, exp=exp, coins=coins, task_done=True)
+                    await asyncio.to_thread(update_user_task_type_done, user_id, task_type_done)
                     profile = await asyncio.to_thread(get_user_exp_coins, user_id)
                     await asyncio.to_thread(delete_task, task_id, user_id)
 
-                    reward_message = (
-                        f"🎉 Задание отмечено как выполненное и удалено из списка!\n"
-                        f"Ты закрыл {t_name}\n"
-                        f"🏆 Твоя награда: +{exp} EXP и +{coins} монет 🪙\n"
-                        f"✨ Всего опыта: {profile['exp']} EXP\n"
-                        f"💰 Баланс монет: {profile['coins']} монет🪙\n\n"
-                        f"💕 Так держать, прокачивайся дальше "
-                    )
+                    if exp > 0:
+                        reward_message = (
+                            f"🎉 Задание отмечено как выполненное и удалено из списка!\n"
+                            f"Ты закрыл {t_name}\n"
+                            f"🏆 Твоя награда: +{exp} EXP и +{coins} монет 🪙\n"
+                            f"✨ Всего опыта: {profile['exp']} EXP\n"
+                            f"💰 Баланс монет: {profile['coins']} монет🪙\n\n"
+                            f"💕 Так держать, прокачивайся дальше "
+                        )
+                    else:
+                        reward_message = (
+                            f"🎉 Задание отмечено как выполненное и удалено из списка!\n"
+                            f"Ты закрыл {t_name}\n"
+                            f"⚠️ Дневной лимит наград за этот тип заданий исчерпан.\n"
+                            f"✨ Всего опыта: {profile['exp']} EXP\n"
+                            f"💰 Баланс монет: {profile['coins']} монет🪙\n\n"
+                            f"💕 Так держать, прокачивайся дальше "
+                        )
 
                     await send_message(user_id=user_id, text=reward_message, attachments=[get_main_keyboard()])
                 return
@@ -731,7 +962,26 @@ async def handle_update(update):
 
         elif payload == "how_to_get_coins":
             text = (
+        "🪙 Как заработать монеты?\n\n"
+        "Монеты - внутренняя валюта 'Дедлайн-хранителя'. "
+        "Получай их за выполнение заданий!\n\n"
 
+        "📚 Награды за выполнение:\n"
+        "📝 Обычное задание - +5 монет\n"
+        "🏆 Олимпиада или конкурс - +15 монет\n"
+        "🔬 Исследовательская работа или проект - +30 монет\n\n"
+
+        "⭐ Повышай свой уровень!\n"
+        "Выполняй задания, получай опыт и открывай новые уровни. "
+        "Чем выше твой уровень, тем больше аватарок доступно в магазине!\n\n"
+
+        "🛍️ Копи монеты и покупай понравившиеся аватарки!\n"
+        "⏳ Каждый выполненный дедлайн приближает тебя к новым наградам!"
+            )
+
+            await send_message(
+                user_id=user_id,
+                text=text
             )
         
 
