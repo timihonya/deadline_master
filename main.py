@@ -271,7 +271,7 @@ def init_shop():
         ("Котик сигма", 50, "Обычная", "profile_images/cool_cat.png", 2),
         ("Лиса школьница", 50, "Обычная", "profile_images/pupil_fox.png", 1),
         ("Дракоша", 70, "Редкая", "profile_images/dragon.png", 3),
-        ("Умная сова", 70, "Редкая", "profile_images/clever_owl.png", 4),
+        ("Мудрая сова", 70, "Редкая", "profile_images/clever_owl.png", 4),
         ("Король Лягуш", 100, "Эпическая", "profile_images/king_frog.png", 5),
         ("КосмоРобот", 100, "Эпическая", "profile_images/space_robot.png", 6),
         ("Хранитель времени", 150, "Мифическая", "profile_images/keeper.png", 11),
@@ -281,7 +281,7 @@ def init_shop():
         ("Котик программист", 150, "Мифическая", "profile_images/kotikproger.png", 13),
         ("Спящий котяра", 70, "Редкая", "profile_images/kotikspit.png", 3),
         ("Цифровой разум",50, "Обычная", "profile_images/python.png", 2),
-        ("Linux", 150, "Мифическая", "profile_images/lunixvotpycke.png", 14),
+        ("Linux в отпуске", 150, "Мифическая", "profile_images/lunixvotpycke.png", 14),
         ("Стив", 70, "Редкая", "profile_images/steve.png", 2),
         ("Котик меломан", 100, "Эпическая", "profile_images/tipoklytoi.png", 10),
         ("Программист", 50, "Обычная", "profile_images/tipoprogrammist.png", 1),
@@ -470,8 +470,13 @@ def generate_profile_card(username, level, coins, exp, streak, total_completed, 
 
             img.paste(avatar, (30, 90), mask)
         else:
-            draw.rounded_rectangle([30, 90, 150, 210], radius=12, fill="#F0F2F5")
-            draw.rectangle([75, 135, 105, 165], outline="#99A2AD", width=2)
+            draw.ellipse([30,90, 150, 210], fill = "#E8EAF0")
+            draw.ellipse([72, 112, 108, 148], fill="#99A2AD")
+            draw.rounded_rectangle(
+                [55, 153, 125, 205],
+                radius=30,
+                fill="#99A2AD"
+            ) # 
     except Exception:
         logger.exception("Ошибка загрузки аватарки")
         draw.rounded_rectangle([30, 90, 150, 210], radius=12, fill="#F0F2F5")
@@ -541,7 +546,7 @@ async def reminder_scheduler():
                                                     {
                                                         "type": "callback",
                                                         "text": "↩️ Главное меню",
-                                                        "payload": "return_to_main_menu"
+                                                        "payload": "return_to_main_menu_send"
                                                     }
                                                 ]
                                             ]
@@ -964,6 +969,18 @@ async def handle_update(update):
                 await answer_callback(callback_id, text=menu_text, attachments=[get_main_keyboard()])
             else:
                 await send_message(user_id=user_id, text=menu_text, attachments=[get_main_keyboard()])
+            return
+
+        elif payload == "return_to_main_menu_send":
+            user_states.pop(user_id, None)
+            menu_text = (
+                "📋Главное меню функций\n\n"
+                " Выбери, что ты хочешь сделать: \n"
+                "➕ Добавить задачу - внести новое задание или проект\n"
+                "📊 Моя нагрузка - посмотреть список текущих заданий и отменить их\n"
+                "🔔 Напоминания - проверить статус работы напоминаний"
+            )
+            await send_message(user_id=user_id, text=menu_text, attachments=[get_main_keyboard()])
             return
 
         elif payload == "how_to_get_coins":
